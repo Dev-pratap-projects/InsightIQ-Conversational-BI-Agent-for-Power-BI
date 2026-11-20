@@ -1,176 +1,221 @@
-# n8n Power BI Data Analyst Agent
+# Talk2BI: Natural-Language Analytics Agent for Power BI
 
-A production-ready [n8n](https://n8n.io) workflow template that turns any [Power BI](https://powerbi.microsoft.com) semantic model into a **natural-language analytics chatbot**. Users ask questions in plain English — the agent writes DAX, runs it via the Power BI REST API, and returns answers with charts.
+> Ask questions about your Power BI data in plain English and get answers, charts and key insights in one reply. No waiting for an analyst to write DAX or build a report.
 
-Built as a LangChain Tools Agent using OpenRouter (Claude Sonnet 4.6 by default), QuickChart for visualizations, and Postgres Chat Memory for persistent conversations.
-
-![n8n](https://img.shields.io/badge/n8n-template-EA4B71?logo=n8n) ![Power BI](https://img.shields.io/badge/Power_BI-REST_API-F2C811?logo=powerbi&logoColor=black) ![Claude](https://img.shields.io/badge/Claude-Sonnet_4.6-D97757) ![License](https://img.shields.io/badge/License-MIT-yellow.svg)
-
-> Part of the **[n8n-ai-agents catalog](https://github.com/MinaSaad1/n8n-ai-agents)** — see the catalog for shared [architecture principles](https://github.com/MinaSaad1/n8n-ai-agents/blob/main/docs/architecture-principles.md), [security framework](https://github.com/MinaSaad1/n8n-ai-agents/blob/main/docs/security-framework.md), and [output conventions](https://github.com/MinaSaad1/n8n-ai-agents/blob/main/docs/output-conventions.md) every template in the collection follows. Sibling: [Supabase/Postgres Data Analyst](https://github.com/MinaSaad1/n8n-supabase-data-analyst-agent).
+![n8n](https://img.shields.io/badge/n8n-workflow-EA4B71?logo=n8n)
+![Power BI](https://img.shields.io/badge/Power_BI-REST_API-F2C811?logo=powerbi&logoColor=black)
+![Claude](https://img.shields.io/badge/LLM-Claude_Sonnet_4.6-D97757)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-chat_memory-4169E1?logo=postgresql&logoColor=white)
+![License](https://img.shields.io/badge/license-MIT-yellow)
 
 ---
 
-## What it does
+## The problem
 
-- **Chat interface** — hosted n8n chat URL or embeddable widget
-- **Model discovery** — queries `INFO.TABLES()` / `INFO.MEASURES()` / `INFO.COLUMNS()` so the agent never hallucinates names
-- **Safe DAX execution** — 200-row cap + `truncated` flag, response flattening strips `[Table].[Column]` brackets
-- **Measure-aware** — agent prefers existing measures over hand-rolled DAX (respects your semantic layer)
-- **Automatic chart generation** — bar / line / pie / doughnut / scatter via QuickChart.io
-- **Persistent memory** — follow-up questions work across turns
-- **Dataset refresh** — agent can trigger a refresh on explicit user request
+Business teams have questions about their data every day: *"What is our OTIF % by customer?"*, *"Show revenue by city as a bar chart."* Each question usually means asking an analyst, who writes a DAX query or builds a report, and the answer comes back hours or days later.
 
-## Architecture
+## The solution
 
-```
-┌─────────────────┐      ┌──────────────────────┐
-│  Chat Trigger   │─────▶│  Tools Agent (LC)    │
-│  (hosted chat)  │      │  Claude Sonnet 4.6   │
-└─────────────────┘      └──┬───────────────────┘
-                            │
-       ┌────────────────────┼────────────────────┐
-       │                    │                    │
-       ▼                    ▼                    ▼
-┌────────────┐      ┌──────────────┐      ┌──────────────┐
-│ Postgres   │      │ 6 Tools      │      │   Config     │
-│ Chat       │      ├──────────────┤      │ group_id +   │
-│ Memory     │      │ list_tables_ │      │ dataset_id   │
-└────────────┘      │  and_measures│      └──────────────┘
-                    │ get_table_   │
-                    │  columns     │
-                    │ run_dax      │─┬──▶ [Sub] Run DAX + Row Cap
-                    │ create_chart │─┘        │
-                    │ refresh_     │          ▼
-                    │  dataset     │    POST executeQueries
-                    │ think        │    → flatten + 200-row cap
-                    └──────────────┘
-```
+Talk2BI is an AI agent built in [n8n](https://n8n.io). A user types a question in a chat window. The agent:
 
-All Power BI REST calls go through Microsoft OAuth2 (Service Principal, client_credentials grant).
+1. Looks up the real tables, columns and measures in the Power BI semantic model
+2. Writes and runs the DAX query through the Power BI REST API
+3. Replies with a headline insight, a chart, a data table, the exact DAX used, and a few observations
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for a deep dive.
+It reuses the measures your data team already defined (for example `[Total Sales]`), so its numbers match your official reports.
 
-## Requirements
+---
 
-- **n8n** ≥ 1.78 (self-hosted or cloud) with LangChain community nodes (included by default)
-- **Power BI Service** workspace with a published dataset — any license (free/Pro/Premium all work via REST API)
-- **Azure AD tenant** with permission to register apps
-- **OpenRouter** account — [get an API key](https://openrouter.ai/keys)
-- **Postgres** database for chat memory (can be the same Supabase/Neon/Railway instance you already have)
+## Key features
 
-## Quickstart
+| Feature | What it does |
+|---|---|
+| **Plain-English questions** | Users chat in natural language; the agent turns questions into DAX |
+| **Schema discovery** | Reads tables, measures and columns first, so it never invents field names |
+| **Measure-aware** | Prefers existing measures over hand-written calculations, keeping KPIs consistent |
+| **Automatic charts** | Bar, line, pie and doughnut charts generated through QuickChart |
+| **Safe query results** | Results are capped at 200 rows with a `truncated` flag so large outputs don't flood the model |
+| **Error recovery** | On a failed query, the agent diagnoses the problem and retries once, then asks the user |
+| **Follow-up questions** | Conversation history is stored in PostgreSQL (last 10 messages) |
+| **Controlled refresh** | The dataset refresh tool runs only when the user explicitly asks |
 
-### 1. Clone
+---
 
-```bash
-git clone https://github.com/MinaSaad1/n8n-powerbi-data-analyst-agent.git
-cd n8n-powerbi-data-analyst-agent
+## How it works
+
+```mermaid
+flowchart LR
+    U[User chat message] --> A[AI Agent<br/>Claude Sonnet 4.6]
+    A <--> M[(PostgreSQL<br/>chat memory)]
+    A --> T1[list_tables_and_measures]
+    A --> T2[get_table_columns]
+    A --> T3[run_dax]
+    A --> T4[create_chart]
+    A --> T5[refresh_dataset]
+    A --> T6[think]
+    T3 --> W1[Sub-workflow:<br/>Run DAX + 200-row cap]
+    T4 --> W2[Sub-workflow:<br/>Build chart via QuickChart]
+    T1 & T2 & W1 & T5 --> P[Power BI REST API]
+    A --> R[Answer: insight + chart + table + DAX]
 ```
 
-### 2. Set up Azure AD + Power BI access
+### The 6 agent tools
 
-Follow [docs/AZURE_AD_SETUP.md](docs/AZURE_AD_SETUP.md) step by step. ~10 minutes. Outcome:
-- A Service Principal with a client ID + secret
-- "Service principals can use Power BI APIs" enabled in your tenant
-- Service Principal added as Member/Contributor on the target workspace
+| Tool | Purpose |
+|---|---|
+| `list_tables_and_measures` | Lists every table and measure in the model |
+| `get_table_columns` | Returns column names and data types for one table |
+| `run_dax` | Executes a DAX query (via sub-workflow) and returns up to 200 rows |
+| `create_chart` | Builds a Chart.js spec and returns a PNG link (via sub-workflow) |
+| `refresh_dataset` | Triggers a dataset refresh, only on explicit request |
+| `think` | Scratchpad for planning and diagnosing errors before retrying |
 
-### 3. Prepare Postgres chat-memory table
+### Response format
 
-Paste [sql/01-setup.sql](sql/01-setup.sql) into your Postgres database.
+Every reply follows the same structure: bold headline with the key number, chart, markdown data table, the DAX that was run, and 2-4 observations.
 
-### 4. Import the workflows into n8n
+---
 
-In n8n → **Workflows** → **Import from File**, in this order:
+## Tech stack
 
-1. [workflows/02-pbi-sub-run-dax.json](workflows/02-pbi-sub-run-dax.json)
-2. [workflows/03-pbi-sub-generate-chart.json](workflows/03-pbi-sub-generate-chart.json)
-3. [workflows/01-pbi-main-agent.json](workflows/01-pbi-main-agent.json)
+- **Automation / agent framework:** n8n (LangChain Tools Agent)
+- **LLM:** Claude Sonnet 4.6 via OpenRouter
+- **Query language:** DAX
+- **Data source:** Power BI semantic model via the REST `executeQueries` API
+- **Memory:** PostgreSQL (`n8n_chat_histories` table)
+- **Charts:** QuickChart.io (Chart.js)
+- **Authentication:** Microsoft Azure AD service principal (OAuth2 client credentials)
 
-After importing the main agent, open the `run_dax` and `create_chart` tool nodes and **re-bind them** to the matching imported sub-workflows (the IDs differ per n8n instance).
+---
 
-### 5. Create n8n credentials
+## Project structure
 
-| Credential | Attach to | Notes |
-|---|---|---|
-| **Microsoft OAuth2 API** | `list_tables_and_measures`, `get_table_columns`, `refresh_dataset`, AND `Run DAX via REST API` (inside the DAX sub-workflow) | Grant type = Client Credentials. Scope = `https://analysis.windows.net/powerbi/api/.default`. Client ID/secret from Azure AD. |
-| **OpenRouter API** | `OpenRouter Chat Model` | — |
-| **Postgres** | `Postgres Chat Memory` | Writable. Uses `n8n_chat_histories` table. |
+```
+.
+├── docs/
+│   ├── ARCHITECTURE.md      # How the agent, tools and auth work
+│   ├── AZURE_AD_SETUP.md    # Service principal + Power BI tenant setup
+│   └── SECURITY.md          # Hardening guide for production use
+├── sql/
+│   └── 01-setup.sql         # Creates the chat memory table
+├── workflows/
+│   ├── 01-pbi-main-agent.json          # Main agent workflow
+│   ├── 02-pbi-sub-run-dax.json         # Runs DAX, flattens results, caps rows
+│   └── 03-pbi-sub-generate-chart.json  # Builds charts via QuickChart
+├── LICENSE
+└── README.md
+```
 
-### 6. Configure workspace + dataset
+---
 
-Open the main agent workflow → click the **Config** node → replace the two placeholders:
-- `group_id` — your Power BI workspace GUID (from the URL: `app.powerbi.com/groups/<GUID>/...`)
-- `dataset_id` — your dataset GUID (from Settings → Datasets → "This dataset is refreshed...")
+## Getting started
 
-### 7. Activate & test
+### Prerequisites
 
-1. Activate all 3 workflows (sub-workflows first, then the main agent).
-2. Open the main agent → click **Chat**.
-3. Ask: *"What tables and measures does this model have?"*
+- n8n 1.78 or later (self-hosted or cloud)
+- A Power BI workspace with a published dataset
+- An Azure AD tenant where you can register an app
+- An [OpenRouter](https://openrouter.ai/keys) API key
+- A PostgreSQL database (Supabase, Neon, Railway or local)
 
-Expected flow: `list_tables_and_measures` → formatted response grouping tables and measures with their descriptions. From there try *"Show me revenue by [your-category-dimension] as a bar chart"*.
+### Setup
 
-## Configuration
+1. **Clone the repo**
+   ```bash
+   git clone https://github.com/<your-username>/<your-repo-name>.git
+   cd <your-repo-name>
+   ```
 
-### Swap the LLM
+2. **Set up Azure AD and Power BI access.** Follow [`docs/AZURE_AD_SETUP.md`](docs/AZURE_AD_SETUP.md) (about 10 minutes). You will end up with a service principal that is a Member of your Power BI workspace.
 
-Main agent → `OpenRouter Chat Model` → change `model`. Any tool-calling-capable model works. Tested with `anthropic/claude-sonnet-4.6`.
+3. **Create the memory table.** Run [`sql/01-setup.sql`](sql/01-setup.sql) in your PostgreSQL database.
 
-### Adjust the system prompt
+4. **Import the workflows into n8n**, in this order:
+   1. `workflows/02-pbi-sub-run-dax.json`
+   2. `workflows/03-pbi-sub-generate-chart.json`
+   3. `workflows/01-pbi-main-agent.json`
 
-All behavior (DAX primer, tool-call order, chart policy, output format) lives in the `Power BI Analyst Agent` node's `systemMessage` option.
+   Then open the `run_dax` and `create_chart` tool nodes in the main agent and re-bind them to the sub-workflows you just imported (workflow IDs differ per n8n instance).
 
-### Point at a different dataset
+5. **Create n8n credentials**
 
-Edit the **Config** node's `group_id` and `dataset_id`. Or make them dynamic by reading from `$json.metadata.group_id` when you embed the chat.
+   | Credential | Used by |
+   |---|---|
+   | Microsoft OAuth2 API (client credentials, scope `https://analysis.windows.net/powerbi/api/.default`) | `list_tables_and_measures`, `get_table_columns`, `refresh_dataset`, and the DAX sub-workflow |
+   | OpenRouter API | `OpenRouter Chat Model` |
+   | Postgres (writable) | `Postgres Chat Memory` |
 
-## Troubleshooting
+6. **Set your workspace and dataset.** In the main agent, open the **Config** node and replace the two placeholders:
+   - `group_id`: your Power BI workspace GUID
+   - `dataset_id`: your dataset GUID
 
-| Symptom | Cause | Fix |
-|---|---|---|
-| `401 Unauthorized` on every REST call | Service Principal not added to the workspace | Power BI Service → Workspace → Access → add the SP as Member/Contributor |
-| `404 Not Found` on executeQueries | Wrong `group_id` or `dataset_id` | Double-check GUIDs from the Power BI URL and dataset settings page |
-| `Feature 'DatasetExecuteQueries' is not available` | Workspace is classic (personal), not modern | Move the dataset to a modern workspace (v2) |
-| `DMV is not supported` on `INFO.TABLES()` | Older Power BI cached model | Refresh the dataset once; INFO functions need recent model updates |
-| Agent loops / max iterations | Poisoned chat memory from earlier iteration | Click ↺ in the chat panel for a fresh session |
-| Chart returns generic/error image | `create_chart` got malformed data | Check the sub-workflow's last execution to see the inputs |
+7. **Activate** all three workflows (sub-workflows first), open the main agent and click **Chat**. Try: *"What tables and measures does this model have?"*
 
-## Security
+---
 
-**This template is a starting point, not a hardened production deployment.** Concerns to address before exposing to untrusted users:
+## Example questions
 
-- Chat URL is public by default — authenticate via embed + JWT
-- Service Principal has broad model access — scope to read-only via Power BI dataset permissions, not just workspace role
-- No RLS in DAX queries by default — implement via `impersonatedUserName` in `executeQueries` body + RLS roles on the dataset
-- `refresh_dataset` is a write op — gate behind stricter authorization
+> **TODO:** Replace these with questions you actually tested on your dataset.
 
-See [docs/SECURITY.md](docs/SECURITY.md) for the layered hardening guide.
+- "What tables and measures does this model have?"
+- "Show me total sales by product category as a bar chart."
+- "What is the On-Time In-Full % by customer?"
+- "Which city has the highest revenue this quarter?"
+
+---
+
+## Results
+
+> **TODO:** Run your own test and fill in real numbers. Do not publish figures you did not measure.
+
+| Metric | Result |
+|---|---|
+| Dataset used | **[your dataset]** |
+| Questions tested | **[N]** |
+| Answers matching Power BI | **[X] of [N]** |
+| Average response time | **[Y] seconds** |
+
+**How I tested:** I wrote [N] business questions, asked each one in the chat, and checked every answer against the numbers in Power BI.
+
+### Screenshots
+
+> **TODO:** Add 2-3 screenshots (chat reply with chart, n8n workflow canvas).
+
+```md
+![Chat reply with chart](docs/images/chat-example.png)
+![n8n workflow](docs/images/workflow.png)
+```
+
+---
+
+## What I did in this project
+
+> **TODO:** Fill this in honestly. It helps recruiters and interviewers see your contribution.
+
+- Deployed and configured the workflows on **[your n8n setup]**
+- Connected the agent to **[your Power BI dataset]**
+- Customized **[e.g. the system prompt, charts, tools]**
+- Tested and fixed **[issues you ran into]**
+
+---
+
+## Limitations
+
+This is a starting template, not a hardened production system.
+
+- The chat URL is public by default; authenticate it before sharing with others.
+- Row-level security is not enforced by default, so users can query anything the service principal can read.
+- `refresh_dataset` is a write operation; guard it for untrusted users.
+- Power BI's REST API allows about 120 requests per minute per service principal.
+- It does not send emails or reports. It only answers in the chat.
+
+See [`docs/SECURITY.md`](docs/SECURITY.md) for a layered hardening guide.
+
+---
 
 ## Roadmap
 
-- [ ] Multi-dataset support — agent picks the right dataset from `INFO.DATABASES()`
-- [ ] `explain_measure` tool — returns the DAX expression + lineage for any measure
-- [ ] XMLA endpoint support (Premium) for richer introspection
+- [ ] Multi-dataset support
+- [ ] `explain_measure` tool (show a measure's DAX and lineage)
 - [ ] Streaming tool-call events to the chat UI
-- [ ] Scheduled PBI briefing companion workflow (KPI digest → email/Teams)
-
-## License
-
-MIT — see [LICENSE](LICENSE).
-
-## Credits
-
-Built by [Mina Saad](https://github.com/MinaSaad1). Companion to [n8n-supabase-data-analyst-agent](https://github.com/MinaSaad1/n8n-supabase-data-analyst-agent). PRs welcome.
-
----
-
-## Need this running in your business?
-
-This template is free and MIT, and it is meant to be forked. Getting one into
-production against your real data, your credentials and your edge cases is a
-different job, and it is the one I do.
-
-I work out what is actually costing a business, then build whatever fixes it: an
-AI agent, an automation, or a full application. Handed over so your team owns it.
-
-[Book a call](https://cal.com/minasaad/60min) · [mina-saad.com](https://www.mina-saad.com)
+- [ ] Scheduled KPI briefing by email or Teams
