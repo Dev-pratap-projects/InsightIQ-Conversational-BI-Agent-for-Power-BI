@@ -1,0 +1,126 @@
+{
+  "name": "[PBI Sub] Generate Chart from Data",
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## [PBI Sub] Generate Chart from Data\n**Purpose:** Assembles a Chart.js v4 spec from simple primitives and renders it as PNG via QuickChart.io.\n\n**Called by:** main workflow's `create_chart` tool.\n\n**Inputs:** `chart_type`, `title`, `labels[]`, `series[{name,values}]`, `x_label?`, `y_label?`.\n\n**Flow:** trigger → Code (builds Chart.js config with colors, axes, legend) → HTTP POST `quickchart.io/chart/create` → Set (extract URL).",
+        "height": 260,
+        "width": 540,
+        "color": 6
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -320
+      ],
+      "id": "sticky-pbi-chart",
+      "name": "README"
+    },
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "gc-trigger",
+      "name": "When Executed by Another Workflow"
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\nconst q = input.query || {};\nconst pick = (k) => input[k] ?? q[k];\n\nconst parseIfString = (v) => {\n  if (typeof v !== 'string') return v;\n  const t = v.trim().replace(/^```(?:json)?\\s*/,'').replace(/```\\s*$/,'');\n  try { return JSON.parse(t); } catch { return v; }\n};\n\nlet chart_type = (pick('chart_type') || 'bar').toString().toLowerCase();\nconst title     = pick('title')   || 'Chart';\nlet labels      = parseIfString(pick('labels'));\nlet series      = parseIfString(pick('series'));\nconst x_label   = pick('x_label') || '';\nconst y_label   = pick('y_label') || '';\n\nif (!Array.isArray(labels) || !Array.isArray(series) || !series.length) {\n  throw new Error('create_chart needs: chart_type, title, labels (array), series (array of {name,values}). Got: ' + JSON.stringify({chart_type, labels_type: typeof labels, series_type: typeof series}));\n}\n\nlet indexAxis;\nif (chart_type === 'horizontalbar') { chart_type = 'bar'; indexAxis = 'y'; }\nif (!['bar','line','pie','doughnut','scatter','radar','polarArea'].includes(chart_type)) chart_type = 'bar';\n\nconst palette = ['#4F46E5','#10B981','#F59E0B','#EF4444','#06B6D4','#8B5CF6','#EC4899','#84CC16'];\nconst isPieLike = chart_type === 'pie' || chart_type === 'doughnut';\n\nconst datasets = series.map((s, i) => {\n  const vals = Array.isArray(s.values) ? s.values.map(v => typeof v === 'number' ? v : parseFloat(v)) : [];\n  return {\n    label: s.name || `Series ${i+1}`,\n    data: vals,\n    backgroundColor: isPieLike ? palette.slice(0, labels.length) : palette[i % palette.length],\n    borderColor: palette[i % palette.length],\n    borderWidth: chart_type === 'line' ? 2 : 1,\n    tension: chart_type === 'line' ? 0.3 : undefined,\n    fill: chart_type === 'line' ? false : undefined\n  };\n});\n\nconst chart = {\n  type: chart_type,\n  data: { labels, datasets },\n  options: {\n    responsive: true,\n    indexAxis,\n    plugins: {\n      title: { display: true, text: title, font: { size: 16, weight: 'bold' } },\n      legend: { display: datasets.length > 1 || isPieLike }\n    },\n    scales: isPieLike ? {} : {\n      x: { title: { display: !!x_label, text: x_label } },\n      y: { title: { display: !!y_label, text: y_label }, beginAtZero: true }\n    }\n  }\n};\n\nreturn [{ json: { backgroundColor: 'white', width: 800, height: 450, format: 'png', version: '4', chart } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "id": "gc-build",
+      "name": "Build Chart.js Config"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://quickchart.io/chart/create",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        0
+      ],
+      "id": "gc-http",
+      "name": "Render via QuickChart"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "url",
+              "name": "url",
+              "value": "={{ $json.url }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        660,
+        0
+      ],
+      "id": "gc-out",
+      "name": "Return URL"
+    }
+  ],
+  "connections": {
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Build Chart.js Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Chart.js Config": {
+      "main": [
+        [
+          {
+            "node": "Render via QuickChart",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Render via QuickChart": {
+      "main": [
+        [
+          {
+            "node": "Return URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

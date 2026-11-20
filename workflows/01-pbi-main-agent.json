@@ -1,0 +1,465 @@
+{
+  "name": "Power BI Data Analyst Agent",
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Power BI Data Analyst Agent\n**What it does:** Natural-language analytics over a Power BI semantic model. Agent writes DAX, hits the REST `executeQueries` API, builds charts.\n\n### Required credentials\n- **Microsoft OAuth2 API** (Service Principal, client_credentials grant, scope: `https://analysis.windows.net/powerbi/api/.default`) — attach to `list_tables_and_measures`, `get_table_columns`, `refresh_dataset`, AND inside the DAX sub-workflow's `Run DAX via REST API` node.\n- **OpenRouter API** — attach to `OpenRouter Chat Model`.\n- **Postgres (writable)** — attach to `Postgres Chat Memory` (stores conversations in `n8n_chat_histories`).\n\n### Before activating\n1. Register an Azure AD app and grant Power BI tenant access — see `docs/AZURE_AD_SETUP.md`.\n2. Add the Service Principal as Member/Contributor on the Power BI workspace.\n3. Open the **Config** node and paste your `group_id` (workspace GUID) + `dataset_id` (dataset GUID).\n4. Re-bind `run_dax` and `create_chart` tools to the imported sub-workflows (IDs differ per instance).\n\n### Demo prompts\n- *What tables and measures does this model have?*\n- *Show me total sales by product category as a bar chart*\n- *Refresh the dataset*",
+        "height": 540,
+        "width": 680,
+        "color": 6
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -680,
+        -580
+      ],
+      "id": "sticky-pbi-readme",
+      "name": "README"
+    },
+    {
+      "parameters": {
+        "public": true,
+        "mode": "hostedChat",
+        "initialMessages": "Hi! I'm your Power BI data analyst.\nAsk me about your semantic model — I can explore tables/measures, run DAX, build charts, and refresh the dataset.",
+        "options": {
+          "title": "Power BI Data Analyst",
+          "subtitle": "Ask questions about your Power BI model — get answers and charts.",
+          "responseMode": "lastNode"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -680,
+        0
+      ],
+      "id": "pbi-chat-trigger",
+      "name": "When chat message received",
+      "webhookId": "pbi-data-analyst-chat"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "gid",
+              "name": "group_id",
+              "value": "REPLACE_WITH_YOUR_WORKSPACE_GUID",
+              "type": "string"
+            },
+            {
+              "id": "did",
+              "name": "dataset_id",
+              "value": "REPLACE_WITH_YOUR_DATASET_GUID",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -460,
+        0
+      ],
+      "id": "pbi-config",
+      "name": "Config"
+    },
+    {
+      "parameters": {
+        "promptType": "auto",
+        "options": {
+          "maxIterations": 12,
+          "systemMessage": "You are a senior data analyst working over a Power BI semantic model. Your query language is DAX, not SQL. Your job is to turn user questions into DAX, execute it, and return decision-ready insights with charts.\n\n## Available tools\n- `list_tables_and_measures()` — returns tables and measures defined in the model. Call once per conversation to discover what's available.\n- `get_table_columns(table_name)` — columns + data types for ONE table. Call before writing DAX against a table you haven't inspected.\n- `run_dax(query)` — executes a DAX query and returns up to 200 rows with a `truncated` flag. Column names are flattened (no `[Table].[Column]` brackets).\n- `create_chart(chart_type, title, labels, series, x_label?, y_label?)` — turn results into a PNG chart. See chart rules below.\n- `refresh_dataset()` — triggers a dataset refresh. Call ONLY when the user explicitly asks to refresh.\n- `think(thought)` — scratchpad for planning or post-error reasoning.\n\n## DAX primer (you write these)\nEvery query starts with `EVALUATE`. Examples:\n```\n// Simple table dump (always wrap in TOPN for safety):\nEVALUATE TOPN(100, Customers, Customers[CustomerId])\n\n// Grouped aggregation — preferred for most analytics:\nEVALUATE\nSUMMARIZECOLUMNS(\n  Product[Category],\n  \"Revenue\", [Total Sales],            // use existing measures when available\n  \"Orders\",  COUNTROWS(Sales)\n)\nORDER BY [Revenue] DESC\n\n// Filtered aggregation via CALCULATE:\nEVALUATE\nROW(\n  \"LastMonthRevenue\",\n  CALCULATE([Total Sales], DATESINPERIOD('Date'[Date], MAX('Date'[Date]), -1, MONTH))\n)\n\n// Time series:\nEVALUATE\nSUMMARIZECOLUMNS(\n  'Date'[Year-Month],\n  \"Revenue\", [Total Sales]\n)\nORDER BY 'Date'[Year-Month]\n```\n\n## Hard rules\n1. **Prefer existing measures.** If `list_tables_and_measures` shows a measure like `[Total Sales]`, USE IT — don't re-derive with `SUMX(Sales, Sales[Qty]*Sales[Price])`. The modeler defined it for a reason (currency conversion, filters, exclusions).\n2. **Always wrap exploratory queries in TOPN(500, …)** unless you're computing a single aggregate.\n3. **Quote table and column names** with single quotes if they contain spaces: `'Sales Order'[Order Date]`.\n4. **Never invent table/column/measure names.** If discovery didn't show it, say so.\n5. **Refresh is a write op.** Only call `refresh_dataset` when the user explicitly asks ('refresh the data', 'update the model'). For ambiguous requests, confirm first.\n6. On DAX error: call `think` → diagnose (wrong column, bad function, missing single quotes) → retry ONCE. After 2 fails, ask the user.\n7. If `run_dax` returns `truncated: true`, tell the user and add more filters — don't work with partial data silently.\n\n## Chart policy — default to yes\nGenerate a chart in 80%+ of responses. Skip only when:\n- Result is a single scalar (one number).\n- User explicitly said no chart / table only.\n- Result is 1 row × 1 col.\n\n**Chart type rules:**\n- Time series (dates, months) → `line`\n- Category comparison (by category, country, segment) → `bar` (horizontalBar if >8 categories)\n- Share of total (≤6 slices) → `doughnut` or `pie`\n- Two numeric dimensions → `scatter`\n- Mixed magnitudes (e.g. count + revenue) → DO NOT combine. Pick ONE metric or call `create_chart` twice.\n\n**Calling create_chart:** pass `chart_type`, `title`, `labels` (array of strings), `series` (array of `{name, values}`), optional `x_label`/`y_label`. The tool assembles the Chart.js spec — don't send nested JSON.\n\n## Output formatting — STRICT\nEvery response follows this structure:\n1. **Bold headline** — the key insight in one sentence with the headline number(s).\n2. **Chart** — `![chart](URL_FROM_TOOL)` on its own line.\n3. **Data table** — proper markdown pipe tables with `| ---: |` right-alignment for numerics. Never space-aligned. Max 15 rows.\n4. **DAX** — fenced ```DAX block with the exact query you ran.\n5. **Observations** — 2-4 non-obvious bullets.\n\nNumber formatting: money as `$1,234`, percents as `12.3%`, dates as `2025-04` (months) or `2025-04-15` (days). Never pad with filler text."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.9,
+      "position": [
+        -220,
+        0
+      ],
+      "id": "pbi-agent",
+      "name": "Power BI Analyst Agent"
+    },
+    {
+      "parameters": {
+        "model": "anthropic/claude-sonnet-4.6",
+        "options": {
+          "temperature": 0.2
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [
+        -380,
+        240
+      ],
+      "id": "pbi-openrouter",
+      "name": "OpenRouter Chat Model"
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $('When chat message received').item.json.sessionId }}",
+        "contextWindowLength": 10,
+        "tableName": "n8n_chat_histories"
+      },
+      "type": "@n8n/n8n-nodes-langchain.memoryPostgresChat",
+      "typeVersion": 1.3,
+      "position": [
+        -220,
+        240
+      ],
+      "id": "pbi-memory",
+      "name": "Postgres Chat Memory"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Lists every table and measure in the Power BI semantic model. Returns kind (table/measure), name, and description. Call once per conversation to discover what exists. Takes no input.",
+        "method": "POST",
+        "url": "=https://api.powerbi.com/v1.0/myorg/groups/{{ $('Config').item.json.group_id }}/datasets/{{ $('Config').item.json.dataset_id }}/executeQueries",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "microsoftOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"queries\": [{\n    \"query\": \"EVALUATE UNION(SELECTCOLUMNS(INFO.TABLES(), \\\"kind\\\", \\\"table\\\", \\\"name\\\", [Name], \\\"description\\\", [Description]), SELECTCOLUMNS(INFO.MEASURES(), \\\"kind\\\", \\\"measure\\\", \\\"name\\\", [Name], \\\"description\\\", [Description]))\"\n  }],\n  \"serializerSettings\": { \"includeNulls\": true }\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.2,
+      "position": [
+        -60,
+        240
+      ],
+      "id": "pbi-tool-list",
+      "name": "list_tables_and_measures"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Gets column names and data types for ONE table in the Power BI model. Call before writing DAX against a table you haven't inspected yet. Input: `table_name` (string, unquoted, e.g. 'Sales').",
+        "method": "POST",
+        "url": "=https://api.powerbi.com/v1.0/myorg/groups/{{ $('Config').item.json.group_id }}/datasets/{{ $('Config').item.json.dataset_id }}/executeQueries",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "microsoftOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"queries\": [{\n    \"query\": \"EVALUATE FILTER(SELECTCOLUMNS(INFO.COLUMNS(), \\\"Table\\\", [Table], \\\"Column\\\", [ExplicitName], \\\"DataType\\\", [ExplicitDataType], \\\"IsKey\\\", [IsKey], \\\"Description\\\", [Description]), [Table] = \\\"{{ $fromAI('table_name', 'Unquoted table name to inspect, e.g. Sales or Customer', 'string') }}\\\")\"\n  }],\n  \"serializerSettings\": { \"includeNulls\": true }\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.2,
+      "position": [
+        100,
+        240
+      ],
+      "id": "pbi-tool-cols",
+      "name": "get_table_columns"
+    },
+    {
+      "parameters": {
+        "name": "run_dax",
+        "description": "Runs a DAX query against the Power BI dataset. Returns up to 200 rows with a `truncated` flag. Always start with EVALUATE. Wrap table dumps in TOPN(500,...) unless you're aggregating.",
+        "workflowId": {
+          "__rl": true,
+          "value": "VMJrZzsStikwQuCg",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "group_id": "={{ $('Config').item.json.group_id }}",
+            "dataset_id": "={{ $('Config').item.json.dataset_id }}",
+            "query": "={{ $fromAI('query', 'A DAX query starting with EVALUATE. Example: EVALUATE SUMMARIZECOLUMNS(Product[Category], \"Revenue\", [Total Sales])', 'string') }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "group_id",
+              "displayName": "group_id",
+              "required": true,
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "dataset_id",
+              "displayName": "dataset_id",
+              "required": true,
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "query",
+              "displayName": "query",
+              "required": true,
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true,
+              "defaultMatch": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2.1,
+      "position": [
+        260,
+        240
+      ],
+      "id": "pbi-tool-dax",
+      "name": "run_dax"
+    },
+    {
+      "parameters": {
+        "name": "create_chart",
+        "description": "Renders a chart and returns a public PNG URL. Inputs: chart_type (bar|line|pie|doughnut|horizontalBar), title, labels (array of strings), series (array of {name, values}), optional x_label, y_label. Do NOT build a Chart.js config — the tool handles assembly.",
+        "workflowId": {
+          "__rl": true,
+          "value": "CPLsOqLT7ksR7WAE",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "chart_type": "={{ $fromAI('chart_type', 'One of: bar, line, pie, doughnut, horizontalBar', 'string') }}",
+            "title": "={{ $fromAI('title', 'Chart title, e.g. \"Revenue by Product Category\"', 'string') }}",
+            "labels": "={{ $fromAI('labels', 'Array of string labels', 'json') }}",
+            "series": "={{ $fromAI('series', 'Array of series objects, each {name, values}', 'json') }}",
+            "x_label": "={{ $fromAI('x_label', 'X-axis title, optional', 'string') }}",
+            "y_label": "={{ $fromAI('y_label', 'Y-axis title, optional', 'string') }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "chart_type",
+              "displayName": "chart_type",
+              "required": true,
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "title",
+              "displayName": "title",
+              "required": true,
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "labels",
+              "displayName": "labels",
+              "required": true,
+              "type": "array",
+              "display": true,
+              "canBeUsedToMatch": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "series",
+              "displayName": "series",
+              "required": true,
+              "type": "array",
+              "display": true,
+              "canBeUsedToMatch": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "x_label",
+              "displayName": "x_label",
+              "required": false,
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "y_label",
+              "displayName": "y_label",
+              "required": false,
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true,
+              "defaultMatch": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2.1,
+      "position": [
+        420,
+        240
+      ],
+      "id": "pbi-tool-chart",
+      "name": "create_chart"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Triggers a refresh of the Power BI dataset. ONLY call on explicit user request ('refresh the data', 'update the model'). Takes no input. Returns 202 Accepted if the refresh was queued.",
+        "method": "POST",
+        "url": "=https://api.powerbi.com/v1.0/myorg/groups/{{ $('Config').item.json.group_id }}/datasets/{{ $('Config').item.json.dataset_id }}/refreshes",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "microsoftOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"notifyOption\": \"NoNotification\"\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.2,
+      "position": [
+        580,
+        240
+      ],
+      "id": "pbi-tool-refresh",
+      "name": "refresh_dataset"
+    },
+    {
+      "parameters": {
+        "name": "think",
+        "description": "Scratchpad. Write a brief plan or diagnose a DAX error before retrying. Input: `thought` (string). Use generously before complex queries and ALWAYS after a tool error.",
+        "language": "javaScript",
+        "jsCode": "const t = typeof query === 'string' ? query : (query && query.thought) ? query.thought : JSON.stringify(query);\nreturn `Thought recorded at ${new Date().toISOString()}: ${t}`;",
+        "specifyInputSchema": true,
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"thought\": { \"type\": \"string\", \"description\": \"Plan or diagnosis.\" }\n  },\n  \"required\": [\"thought\"]\n}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1.3,
+      "position": [
+        740,
+        240
+      ],
+      "id": "pbi-tool-think",
+      "name": "think"
+    }
+  ],
+  "connections": {
+    "When chat message received": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Power BI Analyst Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenRouter Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Power BI Analyst Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres Chat Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "Power BI Analyst Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "list_tables_and_measures": {
+      "ai_tool": [
+        [
+          {
+            "node": "Power BI Analyst Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get_table_columns": {
+      "ai_tool": [
+        [
+          {
+            "node": "Power BI Analyst Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "run_dax": {
+      "ai_tool": [
+        [
+          {
+            "node": "Power BI Analyst Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "create_chart": {
+      "ai_tool": [
+        [
+          {
+            "node": "Power BI Analyst Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "refresh_dataset": {
+      "ai_tool": [
+        [
+          {
+            "node": "Power BI Analyst Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "think": {
+      "ai_tool": [
+        [
+          {
+            "node": "Power BI Analyst Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

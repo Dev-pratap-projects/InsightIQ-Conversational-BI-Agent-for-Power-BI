@@ -1,0 +1,100 @@
+{
+  "name": "[PBI Sub] Run DAX with Row Cap",
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## [PBI Sub] Run DAX with Row Cap\n**Purpose:** Executes an agent-authored DAX query against a Power BI dataset via the REST `executeQueries` endpoint. Flattens the nested response, strips `[Table].[Column]` brackets, caps at 200 rows, and returns a `truncated` flag.\n\n**Called by:** main workflow's `run_dax` tool.\n\n**Inputs:** `group_id`, `dataset_id`, `query` (the DAX `EVALUATE ...` string).\n\n**Flow:**\n1. **Trigger** — receives the three inputs from the parent agent.\n2. **Run DAX via REST API** — HTTP POST to `/v1.0/myorg/groups/{groupId}/datasets/{datasetId}/executeQueries`. Auth via the Power BI OAuth2 credential (Service Principal, client_credentials grant).\n3. **Flatten + Cap** — Code node unwraps the nested `results[0].tables[0].rows`, removes `[Table].[Column]` brackets from keys, caps at 200, adds `truncated` + `total_rows` + `note` on overflow.\n\n**Returns:** `{ rows, row_count, truncated, total_rows?, note? }`.",
+        "height": 420,
+        "width": 600,
+        "color": 6
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -460
+      ],
+      "id": "sticky-pbi-sub-dax",
+      "name": "README"
+    },
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "pbi-trigger",
+      "name": "When Executed by Another Workflow"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.powerbi.com/v1.0/myorg/groups/{{ $json.group_id || $json.query?.group_id }}/datasets/{{ $json.dataset_id || $json.query?.dataset_id }}/executeQueries",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "microsoftOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"queries\": [{ \"query\": {{ JSON.stringify($json.query?.query ?? $json.query) }} }],\n  \"serializerSettings\": { \"includeNulls\": true }\n}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        220,
+        0
+      ],
+      "id": "pbi-exec",
+      "name": "Run DAX via REST API"
+    },
+    {
+      "parameters": {
+        "jsCode": "const resp = $input.first().json;\nconst table = resp?.results?.[0]?.tables?.[0];\nif (!table) {\n  return [{ json: { rows: [], row_count: 0, truncated: false, error: 'No results table in Power BI response', raw: resp } }];\n}\n\nconst rawRows = table.rows || [];\n\n// Strip '[Table].[Column]' brackets → just the Column part\nconst clean = (k) => {\n  const m = k.match(/\\[([^\\]]+)\\]$/);\n  return m ? m[1] : k.replace(/^\\[|\\]$/g, '');\n};\n\nconst rows = rawRows.map(row => {\n  const out = {};\n  for (const k of Object.keys(row)) out[clean(k)] = row[k];\n  return out;\n});\n\nconst MAX = 200;\nif (rows.length > MAX) {\n  return [{ json: {\n    rows: rows.slice(0, MAX),\n    row_count: MAX,\n    total_rows: rows.length,\n    truncated: true,\n    note: `Showing ${MAX} of ${rows.length} rows. Add TOPN, a filter, or an aggregation to narrow results.`\n  } }];\n}\nreturn [{ json: { rows, row_count: rows.length, truncated: false } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ],
+      "id": "pbi-cap",
+      "name": "Flatten + Cap"
+    }
+  ],
+  "connections": {
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Run DAX via REST API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run DAX via REST API": {
+      "main": [
+        [
+          {
+            "node": "Flatten + Cap",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

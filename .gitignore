@@ -1,0 +1,31 @@
+# Secrets
+.env
+.env.*
+*.pem
+*.key
+credentials.json
+*-credentials.json
+client-secret*.txt
+
+# n8n local
+.n8n/
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Build
+node_modules/
+dist/
+build/
+__pycache__/
+*.pyc
+
+# Local testing
+scratch/
+tmp/
+*.local.sql
+*.local.json
