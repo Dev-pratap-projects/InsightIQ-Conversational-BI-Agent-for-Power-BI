@@ -1,4 +1,4 @@
-# Talk2BI: Natural-Language Analytics Agent for Power BI
+# InsightIQ: Conversational BI Agent for Power BI
 
 > Ask questions about your Power BI data in plain English and get answers, charts and key insights in one reply. No waiting for an analyst to write DAX or build a report.
 
